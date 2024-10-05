@@ -1,0 +1,3 @@
+* Gkilo
+
+A text editor implemented in Go!
