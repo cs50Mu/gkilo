@@ -36,7 +36,7 @@ type editorConf struct {
 	cursorX         int
 	renderCursorX   int // index into the renderChars field
 	cursorY         int
-	rows            []editorRow
+	rows            []*editorRow
 	numRows         int
 	rowOffset       int
 	colOffset       int
@@ -53,7 +53,7 @@ func main() {
 
 	flag.Parse()
 
-	logfile, err := os.OpenFile(LogFile, os.O_CREATE|os.O_WRONLY, 0644)
+	logfile, err := os.OpenFile(LogFile, os.O_TRUNC|os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		panic(err)
 	}
@@ -87,6 +87,11 @@ loop:
 				break loop
 			case termbox.KeyEsc:
 				break loop
+			case termbox.KeyEnter:
+			case termbox.KeyCtrlL:
+			case termbox.KeyBackspace:
+			case termbox.KeyDelete:
+
 			case termbox.KeyHome:
 				E.cursorX = 0
 			case termbox.KeyEnd:
@@ -133,7 +138,8 @@ loop:
 					// // print
 					// putChar(x, y, fgColor, bgColor, ev.Ch)
 					// x += runewidth.RuneWidth(ev.Ch)
-					editorMoveCursor(ev.Ch)
+					// editorMoveCursor(ev.Ch)
+					editorInsertChar(ev.Ch)
 				}
 			}
 		case termbox.EventError:
@@ -151,9 +157,11 @@ func editorMoveCursor(ch rune) {
 			E.cursorX--
 		}
 	case 'l':
-		row := E.rows[E.cursorY]
-		if E.cursorX < row.size-1 {
-			E.cursorX++
+		if E.cursorY < E.numRows {
+			row := E.rows[E.cursorY]
+			if E.cursorX < row.size {
+				E.cursorX++
+			}
 		}
 	case 'j':
 		if E.cursorY < E.numRows {
@@ -224,22 +232,27 @@ func editorOpen(fileName string) {
 			end--
 		}
 
-		data := line[:end+1]
-		// logger.Printf("lenData: %v, lenLine: %v\n", len(data), len(line))
-		renderChars := genRenderChars([]rune(data))
-
-		E.rows = append(E.rows,
-			editorRow{
-				size:        len(data),
-				rawChars:    []rune(data),
-				renderChars: renderChars,
-				rsize:       len(renderChars),
-			})
-		E.numRows++
+		chars := line[:end+1]
+		editorAppendRow(chars)
 
 		line, readErr = reader.ReadString('\n')
 	}
 	E.filename = fileName
+}
+
+// editorAppendRow ...
+func editorAppendRow(chars string) {
+	erow := editorRow{
+		size: len(chars),
+		// rawChars: []rune(chars),
+		rawChars: make([]rune, 0, 512), // prealloc space to avoid resize frequently
+	}
+	erow.rawChars = erow.rawChars[:len(chars)] // make room for copy
+	copy(erow.rawChars, []rune(chars))         // dst cannot be empty when copying
+	editorUpdateRow(&erow)
+
+	E.rows = append(E.rows, &erow)
+	E.numRows++
 }
 
 func genRenderChars(rawChars []rune) []rune {
@@ -254,6 +267,11 @@ func genRenderChars(rawChars []rune) []rune {
 		}
 	}
 	return res
+}
+
+func editorUpdateRow(erow *editorRow) {
+	erow.renderChars = genRenderChars(erow.rawChars)
+	erow.rsize = len(erow.renderChars)
 }
 
 func editorRowCxToRx(erow *editorRow, cx int) int {
@@ -279,7 +297,7 @@ func editorRowCxToRx(erow *editorRow, cx int) int {
 func editorScroll() {
 	E.renderCursorX = 0
 	if E.cursorY < E.numRows {
-		E.renderCursorX = editorRowCxToRx(&E.rows[E.cursorY], E.cursorX)
+		E.renderCursorX = editorRowCxToRx(E.rows[E.cursorY], E.cursorX)
 	}
 
 	if E.cursorY < E.rowOffset {
@@ -320,11 +338,41 @@ func editorDrawRows() {
 			if idx < 0 {
 				idx = 0
 			}
+			logger.Printf("lineLen: %v, idx: %v\n", lineLen, idx)
 			if idx > 0 {
 				tbprint(0, row, ColWhi, ColDef, string(E.rows[fileRow].renderChars[E.colOffset:]))
 			}
 		}
 	}
+}
+
+func editorRowInsertChar(erow *editorRow, at int, c rune) {
+	if at < 0 || at > erow.size {
+		at = erow.size
+	}
+	// https://stackoverflow.com/a/46130603
+	erow.rawChars = append(erow.rawChars, ' ')
+	copy(erow.rawChars[at+1:], erow.rawChars[at:])
+	erow.rawChars[at] = c
+
+	// // std lib has slices.Insert since Go 1.21
+	// erow.rawChars = slices.Insert(erow.rawChars, at, c)
+
+	erow.size++
+	logger.Printf("erow.size: %+v\n", erow.size)
+}
+
+func editorInsertChar(c rune) {
+	if E.cursorY == E.numRows {
+		// appendRow
+		editorAppendRow("")
+	}
+	erow := E.rows[E.cursorY]
+	editorRowInsertChar(erow, E.cursorX, c)
+	logger.Printf("rawChars: %c\n", erow.rawChars)
+	editorUpdateRow(erow)
+	// logger.Printf("renderChars: %c\n", erow.renderChars)
+	E.cursorX++
 }
 
 func editorDrawStatusBar() {
