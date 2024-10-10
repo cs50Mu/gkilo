@@ -144,8 +144,13 @@ loop:
 					editorMoveCursor(key)
 				}
 			default:
-				if ev.Ch != 0 {
-					editorInsertChar(ev.Ch)
+				// logger.Printf("ev: %+v\n", ev)
+				if ev.Key == termbox.KeySpace || ev.Ch != 0 {
+					keyPressed := ev.Ch
+					if ev.Key == termbox.KeySpace {
+						keyPressed = ' '
+					}
+					editorInsertChar(keyPressed)
 				}
 			}
 		case termbox.EventError:
