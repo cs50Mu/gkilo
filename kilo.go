@@ -87,11 +87,21 @@ loop:
 				break loop
 			case termbox.KeyEsc:
 				break loop
-			case termbox.KeyEnter:
-			case termbox.KeyCtrlL:
-			case termbox.KeyBackspace:
-			case termbox.KeyDelete:
+			// case termbox.KeyEnter:
+			// case termbox.KeyCtrlL:
 
+			// Backspace delete the character to the left of the cursor
+			// Del delete the character under the cursor
+			case termbox.KeyBackspace2, termbox.KeyDelete:
+				if ev.Key == termbox.KeyDelete {
+					editorMoveCursor('l')
+				}
+				editorDelChar()
+			// case termbox.KeyDelete:
+			case termbox.KeyCtrlL:
+				editorDelRow(E.cursorY)
+			case termbox.KeyCtrlS:
+				editorSave()
 			case termbox.KeyHome:
 				E.cursorX = 0
 			case termbox.KeyEnd:
@@ -135,10 +145,6 @@ loop:
 				}
 			default:
 				if ev.Ch != 0 {
-					// // print
-					// putChar(x, y, fgColor, bgColor, ev.Ch)
-					// x += runewidth.RuneWidth(ev.Ch)
-					// editorMoveCursor(ev.Ch)
 					editorInsertChar(ev.Ch)
 				}
 			}
@@ -344,6 +350,66 @@ func editorDrawRows() {
 			}
 		}
 	}
+}
+
+// editorRowDelChar ...
+func editorRowDelChar(erow *editorRow, at int) {
+	if at < 0 || at >= erow.size {
+		return
+	}
+	n := copy(erow.rawChars[at:], erow.rawChars[at+1:])
+	logger.Printf("%d bytes copied", n)
+	erow.size--
+	erow.rawChars = erow.rawChars[:erow.size] // has to adjust slice size
+
+	// // std lib now support slices.Delete
+	// erow.rawChars = slices.Delete(erow.rawChars, at, at+1)
+
+	editorUpdateRow(erow)
+	E.modified = true
+}
+
+// editorDelChar ...
+func editorDelChar() {
+	if E.cursorY == E.numRows {
+		return
+	}
+
+	erow := E.rows[E.cursorY]
+	// if there is a character to the left of the cursor
+	// we delete it and move the cursor one to the left
+	if E.cursorX > 0 {
+		editorRowDelChar(erow, E.cursorX-1)
+		E.cursorX--
+	} else {
+		if E.cursorY > 0 {
+			// append the remaining of the current row to the previous line
+			prevRow := E.rows[E.cursorY-1]
+			E.cursorX = prevRow.size
+			editorRowAppendChars(prevRow, erow.rawChars...)
+			// delete current row
+			editorDelRow(E.cursorY)
+			E.cursorY--
+		}
+	}
+}
+
+// editorDelRow delete the row at `rowIdx`
+func editorDelRow(rowIdx int) {
+	if rowIdx < 0 || rowIdx >= E.numRows {
+		return
+	}
+
+	copy(E.rows[rowIdx:], E.rows[rowIdx+1:])
+	E.numRows--
+	E.rows = E.rows[:E.numRows]
+	E.modified = true
+}
+
+func editorRowAppendChars(erow *editorRow, chars ...rune) {
+	erow.rawChars = append(erow.rawChars, chars...)
+	erow.size += len(chars)
+	editorUpdateRow(erow)
 }
 
 func editorRowInsertChar(erow *editorRow, at int, c rune) {
