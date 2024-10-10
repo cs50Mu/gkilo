@@ -41,3 +41,19 @@ func TestInsertSlice(t *testing.T) {
 	x := slices.Insert(s, 1, s[1:]...)
 	printSlice(x)
 }
+
+func TestDelEleSlice(t *testing.T) {
+	s := []rune{'a', 'b', 'c'}
+	printSlice(s)
+	n := copy(s[1:], s[2:])
+	fmt.Printf("copied: %d\n", n)
+	s = s[:len(s)-1]
+	printSlice(s)
+}
+
+func TestRuneString(t *testing.T) {
+	a := "hello"
+	fmt.Printf("sLen: %v, runeLen: %v\n", len(a), len([]rune(a)))
+	a = "你好"
+	fmt.Printf("sLen: %v, runeLen: %v\n", len(a), len([]rune(a)))
+}

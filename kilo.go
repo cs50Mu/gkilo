@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"flag"
 	"fmt"
 	"log"
@@ -19,6 +20,7 @@ const (
 	LogFile            = "kilo.log"
 	KILO_TAB_STOP      = 4
 	FILENAME_MAX_PRINT = 20
+	KILO_QUIT_TIMES    = 3
 )
 
 type editorRow struct {
@@ -43,6 +45,7 @@ type editorConf struct {
 	filename        string
 	statusMsg       string
 	statusMsgTime   time.Time // the timestamp when we set a statusMsg
+	modified        bool
 }
 
 var E *editorConf
@@ -74,17 +77,28 @@ func main() {
 		editorOpen(*fileNamePtr)
 	}
 
-	editorSetStatusMsg("HELP: C-Q = quit")
+	editorSetStatusMsg("HELP: C-S = save | C-Q = quit")
 
 	editorRefreshScreen()
 
+	editorProcessKeypress()
+}
+
+// editorProcessKeypress ...
+func editorProcessKeypress() {
+	kiloQuitTimes := KILO_QUIT_TIMES
 loop:
 	for {
 		switch ev := termbox.PollEvent(); ev.Type {
 		case termbox.EventKey:
 			switch ev.Key {
-			case termbox.KeyCtrlQ:
-				break loop
+			case termbox.KeyCtrlD:
+				kiloQuitTimes--
+				if E.modified && kiloQuitTimes > 0 {
+					editorSetStatusMsg(fmt.Sprintf("WARNING!!! File has unsaved changes. Press Ctrl-D %d more times to quit.", kiloQuitTimes))
+				} else {
+					break loop
+				}
 			case termbox.KeyEsc:
 				break loop
 			// case termbox.KeyEnter:
@@ -102,9 +116,9 @@ loop:
 				editorDelRow(E.cursorY)
 			case termbox.KeyCtrlS:
 				editorSave()
-			case termbox.KeyHome:
+			case termbox.KeyHome, termbox.KeyCtrlA:
 				E.cursorX = 0
-			case termbox.KeyEnd:
+			case termbox.KeyEnd, termbox.KeyCtrlE:
 				if E.cursorY < E.numRows {
 					E.cursorX = E.rows[E.cursorY].size
 				}
@@ -152,6 +166,8 @@ loop:
 					}
 					editorInsertChar(keyPressed)
 				}
+				// when pressing other keys, reset the quit time
+				kiloQuitTimes = KILO_QUIT_TIMES
 			}
 		case termbox.EventError:
 			panic(ev.Err)
@@ -195,6 +211,8 @@ func editorMoveCursor(ch rune) {
 				E.cursorX = 0
 			}
 		}
+	} else {
+		E.cursorX = 0
 	}
 }
 
@@ -249,6 +267,39 @@ func editorOpen(fileName string) {
 		line, readErr = reader.ReadString('\n')
 	}
 	E.filename = fileName
+	E.modified = false
+}
+
+func editorSave() {
+	if E.filename != "" {
+		var buffer bytes.Buffer
+		for _, erow := range E.rows {
+			buffer.WriteString(string(erow.rawChars))
+			buffer.WriteRune('\n')
+		}
+
+		file, err := os.OpenFile(E.filename, os.O_RDWR|os.O_CREATE, 0644)
+		if err == nil {
+			// The normal way to overwrite a file is to pass the O_TRUNC
+			// flag to open(), which truncates the file completely, making
+			// it an empty file, before writing the new data into it.  By
+			// truncating the file ourselves to the same length as the
+			// data we are planning to write into it, we are making the
+			// whole overwriting operation a little bit safer in case the
+			// ftruncate() call succeeds but the write() call fails. In
+			// that case, the file would still contain most of the data it
+			// had before.
+			if err = file.Truncate(int64(buffer.Len())); err == nil {
+				if len, err := file.Write(buffer.Bytes()); err == nil {
+					editorSetStatusMsg(fmt.Sprintf("%d bytes written to disk", len))
+				}
+			}
+			file.Close()
+			E.modified = false
+			return
+		}
+		editorSetStatusMsg(fmt.Sprintf("Can't save! I/O error: %s", err.Error()))
+	}
 }
 
 // editorAppendRow ...
@@ -264,6 +315,7 @@ func editorAppendRow(chars string) {
 
 	E.rows = append(E.rows, &erow)
 	E.numRows++
+	E.modified = true
 }
 
 func genRenderChars(rawChars []rune) []rune {
@@ -295,8 +347,9 @@ func editorRowCxToRx(erow *editorRow, cx int) int {
 	// }
 	// return rx
 
+	logger.Printf("erow: %+v, cx: %+v\n", erow, cx)
 	tabs := 0
-	for j := 0; j < cx; j++ {
+	for j := 0; j < cx && j < len(erow.rawChars); j++ {
 		if erow.rawChars[j] == '\t' {
 			tabs++
 		}
@@ -349,7 +402,7 @@ func editorDrawRows() {
 			if idx < 0 {
 				idx = 0
 			}
-			logger.Printf("lineLen: %v, idx: %v\n", lineLen, idx)
+			// logger.Printf("lineLen: %v, idx: %v\n", lineLen, idx)
 			if idx > 0 {
 				tbprint(0, row, ColWhi, ColDef, string(E.rows[fileRow].renderChars[E.colOffset:]))
 			}
@@ -430,7 +483,9 @@ func editorRowInsertChar(erow *editorRow, at int, c rune) {
 	// erow.rawChars = slices.Insert(erow.rawChars, at, c)
 
 	erow.size++
+	editorUpdateRow(erow)
 	logger.Printf("erow.size: %+v\n", erow.size)
+	E.modified = true
 }
 
 func editorInsertChar(c rune) {
@@ -441,7 +496,6 @@ func editorInsertChar(c rune) {
 	erow := E.rows[E.cursorY]
 	editorRowInsertChar(erow, E.cursorX, c)
 	logger.Printf("rawChars: %c\n", erow.rawChars)
-	editorUpdateRow(erow)
 	// logger.Printf("renderChars: %c\n", erow.renderChars)
 	E.cursorX++
 }
@@ -453,7 +507,11 @@ func editorDrawStatusBar() {
 	if E.filename != "" {
 		filename = E.filename
 	}
-	msg := fmt.Sprintf("%.*s - %d lines", FILENAME_MAX_PRINT, filename, E.numRows)
+	dirtyMsg := ""
+	if E.modified {
+		dirtyMsg = "(modified)"
+	}
+	msg := fmt.Sprintf("%.*s - %d lines %s", FILENAME_MAX_PRINT, filename, E.numRows, dirtyMsg)
 	tbprint(0, E.statusBarRowIdx, fgColor, bgColor, msg)
 	for i := 0; i < E.screenCols-len(msg); i++ {
 		termbox.SetCell(len(msg)+i, E.statusBarRowIdx, rune(' '), fgColor, bgColor)
@@ -462,9 +520,12 @@ func editorDrawStatusBar() {
 
 // editorDrawMsgbar ...
 func editorDrawMsgbar() {
-	// 使用 "%.*s" 格式说明符，其中 * 表示动态指定宽度。
-	msg := fmt.Sprintf("%.*s", E.screenCols, E.statusMsg)
-	tbprint(0, E.msgBarRowIdx, ColWhi, ColDef, msg)
+	now := time.Now()
+	if now.Sub(E.statusMsgTime) < 5*time.Second {
+		// 使用 "%.*s" 格式说明符，其中 * 表示动态指定宽度。
+		msg := fmt.Sprintf("%.*s", E.screenCols, E.statusMsg)
+		tbprint(0, E.msgBarRowIdx, ColWhi, ColDef, msg)
+	}
 }
 
 // editorSetStatusMsg ...
