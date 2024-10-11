@@ -272,35 +272,40 @@ func editorOpen(fileName string) {
 }
 
 func editorSave() {
-	if E.filename != "" {
-		var buffer bytes.Buffer
-		for _, erow := range E.rows {
-			buffer.WriteString(string(erow.rawChars))
-			buffer.WriteRune('\n')
-		}
-
-		file, err := os.OpenFile(E.filename, os.O_RDWR|os.O_CREATE, 0644)
-		if err == nil {
-			// The normal way to overwrite a file is to pass the O_TRUNC
-			// flag to open(), which truncates the file completely, making
-			// it an empty file, before writing the new data into it.  By
-			// truncating the file ourselves to the same length as the
-			// data we are planning to write into it, we are making the
-			// whole overwriting operation a little bit safer in case the
-			// ftruncate() call succeeds but the write() call fails. In
-			// that case, the file would still contain most of the data it
-			// had before.
-			if err = file.Truncate(int64(buffer.Len())); err == nil {
-				if len, err := file.Write(buffer.Bytes()); err == nil {
-					editorSetStatusMsg(fmt.Sprintf("%d bytes written to disk", len))
-				}
-			}
-			file.Close()
-			E.modified = false
+	if E.filename == "" {
+		E.filename = editorPrompt("Save as: %v (ESC to cancle)")
+		if E.filename == "" {
+			editorSetStatusMsg("Save aborted")
 			return
 		}
-		editorSetStatusMsg(fmt.Sprintf("Can't save! I/O error: %s", err.Error()))
 	}
+	var buffer bytes.Buffer
+	for _, erow := range E.rows {
+		buffer.WriteString(string(erow.rawChars))
+		buffer.WriteRune('\n')
+	}
+
+	file, err := os.OpenFile(E.filename, os.O_RDWR|os.O_CREATE, 0644)
+	if err == nil {
+		// The normal way to overwrite a file is to pass the O_TRUNC
+		// flag to open(), which truncates the file completely, making
+		// it an empty file, before writing the new data into it.  By
+		// truncating the file ourselves to the same length as the
+		// data we are planning to write into it, we are making the
+		// whole overwriting operation a little bit safer in case the
+		// ftruncate() call succeeds but the write() call fails. In
+		// that case, the file would still contain most of the data it
+		// had before.
+		if err = file.Truncate(int64(buffer.Len())); err == nil {
+			if len, err := file.Write(buffer.Bytes()); err == nil {
+				editorSetStatusMsg(fmt.Sprintf("%d bytes written to disk", len))
+			}
+		}
+		file.Close()
+		E.modified = false
+		return
+	}
+	editorSetStatusMsg(fmt.Sprintf("Can't save! I/O error: %s", err.Error()))
 }
 
 func genRenderChars(rawChars []rune) []rune {
@@ -573,9 +578,41 @@ func editorDrawMsgbar() {
 }
 
 // editorSetStatusMsg ...
-func editorSetStatusMsg(msg string) {
+func editorSetStatusMsg(strFmt string, args ...any) {
+	var msg string
+	if len(args) > 0 {
+		msg = fmt.Sprintf(strFmt, args...)
+	} else {
+		msg = strFmt
+	}
 	E.statusMsg = msg
 	E.statusMsgTime = time.Now()
+}
+
+func editorPrompt(prompt string) string {
+	var buffer bytes.Buffer
+
+	for {
+		editorSetStatusMsg(prompt, buffer.String())
+		editorRefreshScreen()
+
+		switch ev := termbox.PollEvent(); ev.Type {
+		case termbox.EventKey:
+			if ev.Ch != 0 {
+				buffer.WriteRune(ev.Ch)
+			} else if ev.Key == termbox.KeyEnter {
+				editorSetStatusMsg("")
+				return buffer.String()
+			} else if ev.Key == termbox.KeyEsc {
+				editorSetStatusMsg("")
+				return ""
+			} else if ev.Key == termbox.KeyBackspace2 || ev.Key == termbox.KeyDelete {
+				if buffer.Len() > 0 {
+					buffer.Truncate(buffer.Len() - 1)
+				}
+			}
+		}
+	}
 }
 
 // This function is often use
