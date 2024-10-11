@@ -101,7 +101,8 @@ loop:
 				}
 			case termbox.KeyEsc:
 				break loop
-			// case termbox.KeyEnter:
+			case termbox.KeyEnter:
+				editorInsertNewline()
 			// case termbox.KeyCtrlL:
 
 			// Backspace delete the character to the left of the cursor
@@ -262,7 +263,7 @@ func editorOpen(fileName string) {
 		}
 
 		chars := line[:end+1]
-		editorAppendRow(chars)
+		editorInsertRow(E.numRows, chars)
 
 		line, readErr = reader.ReadString('\n')
 	}
@@ -302,22 +303,6 @@ func editorSave() {
 	}
 }
 
-// editorAppendRow ...
-func editorAppendRow(chars string) {
-	erow := editorRow{
-		size: len(chars),
-		// rawChars: []rune(chars),
-		rawChars: make([]rune, 0, 512), // prealloc space to avoid resize frequently
-	}
-	erow.rawChars = erow.rawChars[:len(chars)] // make room for copy
-	copy(erow.rawChars, []rune(chars))         // dst cannot be empty when copying
-	editorUpdateRow(&erow)
-
-	E.rows = append(E.rows, &erow)
-	E.numRows++
-	E.modified = true
-}
-
 func genRenderChars(rawChars []rune) []rune {
 	var res []rune
 	for _, ch := range rawChars {
@@ -347,7 +332,7 @@ func editorRowCxToRx(erow *editorRow, cx int) int {
 	// }
 	// return rx
 
-	logger.Printf("erow: %+v, cx: %+v\n", erow, cx)
+	// logger.Printf("erow: %+v, cx: %+v\n", erow, cx)
 	tabs := 0
 	for j := 0; j < cx && j < len(erow.rawChars); j++ {
 		if erow.rawChars[j] == '\t' {
@@ -410,6 +395,35 @@ func editorDrawRows() {
 	}
 }
 
+// editorInsertRow ...
+func editorInsertRow(rowIdx int, chars string) {
+	if rowIdx < 0 || rowIdx > E.numRows {
+		return
+	}
+	erow := editorRow{
+		size: len(chars),
+		// rawChars: []rune(chars),
+		rawChars: make([]rune, 0, 512), // prealloc space to avoid resize frequently
+	}
+	erow.rawChars = erow.rawChars[:len(chars)] // make room for copy
+	copy(erow.rawChars, []rune(chars))         // dst cannot be empty when copying
+	editorUpdateRow(&erow)
+
+	// insert after the last row
+	// just append it
+	if rowIdx == E.numRows {
+		E.rows = append(E.rows, &erow)
+	} else {
+		// insert the new row
+		E.rows = append(E.rows, nil)
+		copy(E.rows[rowIdx+1:], E.rows[rowIdx:])
+		E.rows[rowIdx] = &erow
+	}
+
+	E.numRows++
+	E.modified = true
+}
+
 // editorRowDelChar ...
 func editorRowDelChar(erow *editorRow, at int) {
 	if at < 0 || at >= erow.size {
@@ -464,6 +478,36 @@ func editorDelRow(rowIdx int) {
 	E.modified = true
 }
 
+// editorInsertNewline ...
+func editorInsertNewline() {
+	if E.cursorY < 0 || E.cursorY >= E.numRows {
+		return
+	}
+
+	erow := E.rows[E.cursorY]
+	if E.cursorX < 0 || E.cursorX > erow.size {
+		return
+	}
+	// if we're at the beginning of a row, just insert a new empty row
+	// before the current row
+	if E.cursorX == 0 {
+		editorInsertRow(E.cursorY, "")
+	} else {
+		var charsToMove []rune
+		if E.cursorX != erow.size {
+			charsToMove = erow.rawChars[E.cursorX:]
+			erow.rawChars = erow.rawChars[:E.cursorX]
+			erow.size -= len(charsToMove)
+			editorUpdateRow(erow)
+		}
+		editorInsertRow(E.cursorY+1, string(charsToMove))
+	}
+
+	// update the cursor
+	E.cursorX = 0
+	E.cursorY++
+}
+
 func editorRowAppendChars(erow *editorRow, chars ...rune) {
 	erow.rawChars = append(erow.rawChars, chars...)
 	erow.size += len(chars)
@@ -491,7 +535,7 @@ func editorRowInsertChar(erow *editorRow, at int, c rune) {
 func editorInsertChar(c rune) {
 	if E.cursorY == E.numRows {
 		// appendRow
-		editorAppendRow("")
+		editorInsertRow(E.cursorY, "")
 	}
 	erow := E.rows[E.cursorY]
 	editorRowInsertChar(erow, E.cursorX, c)

@@ -57,3 +57,18 @@ func TestRuneString(t *testing.T) {
 	a = "你好"
 	fmt.Printf("sLen: %v, runeLen: %v\n", len(a), len([]rune(a)))
 }
+
+func TestInsertSlice2(t *testing.T) {
+	s := []rune{'a', 'b', 'c'}
+	printSlice(s)
+	Insert(&s, 2, 'd')
+	printSlice(s)
+}
+
+// Insert 在切片的指定位置插入一个元素
+func Insert(slice *[]rune, index int, value rune) {
+	// 确保切片可以容纳新元素
+	*slice = append(*slice, 0)                 // 在切片末尾追加一个零值
+	copy((*slice)[index+1:], (*slice)[index:]) // 移动元素
+	(*slice)[index] = value                    // 在指定位置插入新元素
+}
