@@ -263,7 +263,7 @@ func editorOpen(fileName string) {
 		}
 
 		chars := line[:end+1]
-		editorInsertRow(E.numRows, chars)
+		editorInsertRow(E.numRows, []rune(chars))
 
 		line, readErr = reader.ReadString('\n')
 	}
@@ -339,13 +339,17 @@ func editorRowCxToRx(erow *editorRow, cx int) int {
 
 	// logger.Printf("erow: %+v, cx: %+v\n", erow, cx)
 	tabs := 0
+	widths := 0 // extra render space for non-ascii characters
 	for j := 0; j < cx && j < len(erow.rawChars); j++ {
+		width := runewidth.RuneWidth(erow.rawChars[j])
 		if erow.rawChars[j] == '\t' {
 			tabs++
+		} else if width > 1 {
+			widths += width - 1
 		}
 	}
 
-	return cx + tabs*KILO_TAB_STOP - tabs
+	return cx + tabs*KILO_TAB_STOP - tabs + widths
 }
 
 func editorScroll() {
@@ -400,8 +404,8 @@ func editorDrawRows() {
 	}
 }
 
-// editorInsertRow ...
-func editorInsertRow(rowIdx int, chars string) {
+// editorInsertRow it supports insert after the last element
+func editorInsertRow(rowIdx int, chars []rune) {
 	if rowIdx < 0 || rowIdx > E.numRows {
 		return
 	}
@@ -411,7 +415,7 @@ func editorInsertRow(rowIdx int, chars string) {
 		rawChars: make([]rune, 0, 512), // prealloc space to avoid resize frequently
 	}
 	erow.rawChars = erow.rawChars[:len(chars)] // make room for copy
-	copy(erow.rawChars, []rune(chars))         // dst cannot be empty when copying
+	copy(erow.rawChars, chars)                 // dst cannot be empty when copying
 	editorUpdateRow(&erow)
 
 	// insert after the last row
@@ -496,7 +500,7 @@ func editorInsertNewline() {
 	// if we're at the beginning of a row, just insert a new empty row
 	// before the current row
 	if E.cursorX == 0 {
-		editorInsertRow(E.cursorY, "")
+		editorInsertRow(E.cursorY, []rune(""))
 	} else {
 		var charsToMove []rune
 		if E.cursorX != erow.size {
@@ -505,7 +509,7 @@ func editorInsertNewline() {
 			erow.size -= len(charsToMove)
 			editorUpdateRow(erow)
 		}
-		editorInsertRow(E.cursorY+1, string(charsToMove))
+		editorInsertRow(E.cursorY+1, charsToMove)
 	}
 
 	// update the cursor
@@ -540,7 +544,7 @@ func editorRowInsertChar(erow *editorRow, at int, c rune) {
 func editorInsertChar(c rune) {
 	if E.cursorY == E.numRows {
 		// appendRow
-		editorInsertRow(E.cursorY, "")
+		editorInsertRow(E.cursorY, []rune(""))
 	}
 	erow := E.rows[E.cursorY]
 	editorRowInsertChar(erow, E.cursorX, c)
