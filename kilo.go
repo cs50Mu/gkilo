@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/mattn/go-runewidth"
@@ -77,10 +78,8 @@ func main() {
 		editorOpen(*fileNamePtr)
 	}
 
-	editorSetStatusMsg("HELP: C-S = save | C-Q = quit")
-
+	editorSetStatusMsg("HELP: C-S = save | C-Q = quit | C-F = find")
 	editorRefreshScreen()
-
 	editorProcessKeypress()
 }
 
@@ -117,6 +116,8 @@ loop:
 				editorDelRow(E.cursorY)
 			case termbox.KeyCtrlS:
 				editorSave()
+			case termbox.KeyCtrlF:
+				editorFind()
 			case termbox.KeyHome, termbox.KeyCtrlA:
 				E.cursorX = 0
 			case termbox.KeyEnd, termbox.KeyCtrlE:
@@ -327,29 +328,37 @@ func editorUpdateRow(erow *editorRow) {
 	erow.rsize = len(erow.renderChars)
 }
 
+// editorRowCxToRx CursorX --> renderCursorX
 func editorRowCxToRx(erow *editorRow, cx int) int {
-	// rx := 0
-	// for j := 0; j < cx; j++ {
-	// 	if erow.rawChars[j] == '\t' {
-	// 		rx += (KILO_TAB_STOP - 1) - (rx % KILO_TAB_STOP)
-	// 	}
-	// 	rx++
-	// }
-	// return rx
-
-	// logger.Printf("erow: %+v, cx: %+v\n", erow, cx)
-	tabs := 0
-	widths := 0 // extra render space for non-ascii characters
-	for j := 0; j < cx && j < len(erow.rawChars); j++ {
-		width := runewidth.RuneWidth(erow.rawChars[j])
-		if erow.rawChars[j] == '\t' {
-			tabs++
-		} else if width > 1 {
-			widths += width - 1
+	var rx int
+	for i := 0; i < cx; i++ {
+		width := runewidth.RuneWidth(erow.rawChars[i])
+		if erow.rawChars[i] == '\t' {
+			rx += KILO_TAB_STOP
+		} else {
+			rx += width
 		}
 	}
 
-	return cx + tabs*KILO_TAB_STOP - tabs + widths
+	return rx
+}
+
+// editorRowRxToCx renderCursorX --> cursorX
+func editorRowRxToCx(erow *editorRow, rx int) int {
+	currRx := 0
+	var i int
+	for i = 0; i < erow.size; i++ {
+		width := runewidth.RuneWidth(erow.rawChars[i])
+		if erow.rawChars[i] == '\t' {
+			currRx += KILO_TAB_STOP
+		} else {
+			currRx += width
+		}
+		if currRx > rx {
+			break
+		}
+	}
+	return i
 }
 
 func editorScroll() {
@@ -615,6 +624,32 @@ func editorPrompt(prompt string) string {
 					buffer.Truncate(buffer.Len() - 1)
 				}
 			}
+		}
+	}
+}
+
+func editorFind() {
+	query := editorPrompt("Search: %s (ESC to cancel)")
+	if query == "" {
+		return
+	}
+
+	for i := 0; i < E.numRows; i++ {
+		erow := E.rows[i]
+		rx := strings.Index(string(erow.renderChars), query)
+		if rx > 0 {
+			E.cursorY = i
+			// cursorX need a cx
+			E.cursorX = editorRowRxToCx(erow, rx)
+			// we set E.rowOffset so that we are scrolled to the very
+			// bottom of the file, which will cause editorScroll() to
+			// scroll upwards at the next screen refresh so that the
+			// matching line will be at the very top of the
+			// screen. This way, the user doesn’t have to look all
+			// over their screen to find where their cursor jumped to,
+			// and where the matching line is.
+			E.rowOffset = E.numRows
+			break
 		}
 	}
 }

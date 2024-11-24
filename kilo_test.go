@@ -72,3 +72,22 @@ func Insert(slice *[]rune, index int, value rune) {
 	copy((*slice)[index+1:], (*slice)[index:]) // 移动元素
 	(*slice)[index] = value                    // 在指定位置插入新元素
 }
+
+func CxToRx(s string, cx int) int {
+	var rx int
+	for i := 0; i < cx; i++ {
+		if s[i] == '\t' {
+			rx += KILO_TAB_STOP
+		} else {
+			rx += 1
+		}
+	}
+
+	return rx
+}
+
+func TestCxToRx(t *testing.T) {
+	s := "h\t\tello"
+	cx := 2
+	fmt.Printf("cx: %v, rx: %v\n", cx, CxToRx(s, cx))
+}
