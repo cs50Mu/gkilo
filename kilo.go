@@ -638,7 +638,7 @@ func editorFind() {
 	savedCy := E.cursorY
 	savedRowOffset := E.rowOffset
 	savedColOffset := E.colOffset
-	query := editorPrompt("Search: %s (ESC to cancel)", editorFindCallback)
+	query := editorPrompt("Search: %s (Use ESC/Arrow/Enter)", editorFindCallback)
 	if query == "" {
 		E.cursorX = savedCx
 		E.cursorY = savedCy
@@ -647,16 +647,41 @@ func editorFind() {
 	}
 }
 
+var (
+	lastMatch int = -1
+	direction int = 1
+)
+
 func editorFindCallback(query string, lastKey termbox.Key) {
 	// when in `incremental search`, press Enter or Esc means the search is done
 	if lastKey == termbox.KeyEnter || lastKey == termbox.KeyEsc {
+		lastMatch = -1
+		direction = 1
 		return
+	} else if lastKey == termbox.KeyArrowDown {
+		direction = 1
+	} else if lastKey == termbox.KeyArrowUp {
+		direction = -1
 	}
-	for i := 0; i < E.numRows; i++ {
-		erow := E.rows[i]
+	if lastMatch == -1 { // if there is no lastMatch, search in the
+		// forward direction
+		direction = 1
+	}
+	curr := lastMatch
+	// TODO: current implemention continues to search in the "next" line, but
+	// the next match may still exists in the current line
+	for i := 0; i < E.numRows; i++ { // 最多搜索 numRows 行，思考一下 wrap around
+		curr += direction // 根据 direction 来移动到“下一行”来继续搜索
+		if curr == -1 {
+			curr = E.numRows - 1
+		} else if curr == E.numRows {
+			curr = 0
+		} // allow search to wrap around
+		erow := E.rows[curr]
 		rx := strings.Index(string(erow.renderChars), query)
 		if rx > 0 {
-			E.cursorY = i
+			E.cursorY = curr
+			lastMatch = curr
 			// cursorX need a cx
 			E.cursorX = editorRowRxToCx(erow, rx)
 			// we set E.rowOffset so that we are scrolled to the very
