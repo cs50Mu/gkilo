@@ -274,7 +274,7 @@ func editorOpen(fileName string) {
 
 func editorSave() {
 	if E.filename == "" {
-		E.filename = editorPrompt("Save as: %v (ESC to cancle)")
+		E.filename = editorPrompt("Save as: %v (ESC to cancle)", nil)
 		if E.filename == "" {
 			editorSetStatusMsg("Save aborted")
 			return
@@ -602,7 +602,8 @@ func editorSetStatusMsg(strFmt string, args ...any) {
 	E.statusMsgTime = time.Now()
 }
 
-func editorPrompt(prompt string) string {
+func editorPrompt(prompt string,
+	cb func(query string, lastKey termbox.Key)) string {
 	var buffer bytes.Buffer
 
 	for {
@@ -624,16 +625,33 @@ func editorPrompt(prompt string) string {
 					buffer.Truncate(buffer.Len() - 1)
 				}
 			}
+
+			if cb != nil {
+				cb(buffer.String(), ev.Key)
+			}
 		}
 	}
 }
 
 func editorFind() {
-	query := editorPrompt("Search: %s (ESC to cancel)")
+	savedCx := E.cursorX
+	savedCy := E.cursorY
+	savedRowOffset := E.rowOffset
+	savedColOffset := E.colOffset
+	query := editorPrompt("Search: %s (ESC to cancel)", editorFindCallback)
 	if query == "" {
+		E.cursorX = savedCx
+		E.cursorY = savedCy
+		E.rowOffset = savedRowOffset
+		E.colOffset = savedColOffset
+	}
+}
+
+func editorFindCallback(query string, lastKey termbox.Key) {
+	// when in `incremental search`, press Enter or Esc means the search is done
+	if lastKey == termbox.KeyEnter || lastKey == termbox.KeyEsc {
 		return
 	}
-
 	for i := 0; i < E.numRows; i++ {
 		erow := E.rows[i]
 		rx := strings.Index(string(erow.renderChars), query)
