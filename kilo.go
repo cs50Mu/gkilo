@@ -9,26 +9,37 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/mattn/go-runewidth"
-	"github.com/nsf/termbox-go"
+	tb "github.com/nsf/termbox-go"
 )
 
 const (
 	GKILO_VERSION      = "0.0.1"
-	ColDef             = termbox.ColorDefault
-	ColWhi             = termbox.ColorWhite
+	ColDef             = tb.ColorDefault
+	ColWhi             = tb.ColorWhite
 	LogFile            = "kilo.log"
 	KILO_TAB_STOP      = 4
 	FILENAME_MAX_PRINT = 20
 	KILO_QUIT_TIMES    = 3
 )
 
+type editorHighlight uint8
+
+const (
+	HL_NORMAl editorHighlight = iota
+	HL_NUMBER
+	HL_STRING
+	HL_MATCH
+)
+
 type editorRow struct {
 	size        int
 	rawChars    []rune // 原始的字符集合
 	rsize       int
-	renderChars []rune // 需要渲染的字符集合
+	renderChars []rune            // 需要渲染的字符集合
+	hl          []editorHighlight // for highlighting
 }
 
 type editorConf struct {
@@ -47,6 +58,28 @@ type editorConf struct {
 	statusMsg       string
 	statusMsgTime   time.Time // the timestamp when we set a statusMsg
 	modified        bool
+	syntax          *editorSyntax
+}
+
+type editorSyntax struct {
+	fileType  string
+	fileMatch []string // an array of strings, where each string
+	// contains a pattern to match a filename against
+	flags int
+}
+
+const (
+	HL_HIGHLIGHT_NUMBERS = 1 << 0
+	HL_HIGHLIGHT_STRINGS = 1 << 1
+)
+
+/***** filetypes *****/
+var HLDB = []editorSyntax{
+	{
+		fileType:  "c",
+		fileMatch: []string{".c", ".h", ".cpp"},
+		flags:     HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
+	},
 }
 
 var E *editorConf
@@ -64,13 +97,13 @@ func main() {
 
 	logger = log.New(logfile, "[kilo] ", log.LstdFlags)
 
-	err = termbox.Init()
+	err = tb.Init()
 	if err != nil {
 		panic(err)
 	}
-	defer termbox.Close()
+	defer tb.Close()
 
-	termbox.SetInputMode(termbox.InputEsc)
+	tb.SetInputMode(tb.InputEsc)
 
 	initEditor()
 
@@ -88,63 +121,63 @@ func editorProcessKeypress() {
 	kiloQuitTimes := KILO_QUIT_TIMES
 loop:
 	for {
-		switch ev := termbox.PollEvent(); ev.Type {
-		case termbox.EventKey:
+		switch ev := tb.PollEvent(); ev.Type {
+		case tb.EventKey:
 			switch ev.Key {
-			case termbox.KeyCtrlD:
+			case tb.KeyCtrlD:
 				kiloQuitTimes--
 				if E.modified && kiloQuitTimes > 0 {
 					editorSetStatusMsg(fmt.Sprintf("WARNING!!! File has unsaved changes. Press Ctrl-D %d more times to quit.", kiloQuitTimes))
 				} else {
 					break loop
 				}
-			case termbox.KeyEsc:
+			case tb.KeyEsc:
 				break loop
-			case termbox.KeyEnter:
+			case tb.KeyEnter:
 				editorInsertNewline()
-			// case termbox.KeyCtrlL:
+			// case tb.KeyCtrlL:
 
 			// Backspace delete the character to the left of the cursor
 			// Del delete the character under the cursor
-			case termbox.KeyBackspace2, termbox.KeyDelete:
-				if ev.Key == termbox.KeyDelete {
+			case tb.KeyBackspace2, tb.KeyDelete:
+				if ev.Key == tb.KeyDelete {
 					editorMoveCursor('l')
 				}
 				editorDelChar()
-			// case termbox.KeyDelete:
-			case termbox.KeyCtrlL:
+			// case tb.KeyDelete:
+			case tb.KeyCtrlL:
 				editorDelRow(E.cursorY)
-			case termbox.KeyCtrlS:
+			case tb.KeyCtrlS:
 				editorSave()
-			case termbox.KeyCtrlF:
+			case tb.KeyCtrlF:
 				editorFind()
-			case termbox.KeyHome, termbox.KeyCtrlA:
+			case tb.KeyHome, tb.KeyCtrlA:
 				E.cursorX = 0
-			case termbox.KeyEnd, termbox.KeyCtrlE:
+			case tb.KeyEnd, tb.KeyCtrlE:
 				if E.cursorY < E.numRows {
 					E.cursorX = E.rows[E.cursorY].size
 				}
-			case termbox.KeyArrowDown, termbox.KeyArrowUp,
-				termbox.KeyArrowLeft, termbox.KeyArrowRight:
+			case tb.KeyArrowDown, tb.KeyArrowUp,
+				tb.KeyArrowLeft, tb.KeyArrowRight:
 				var key rune
 				switch ev.Key {
-				case termbox.KeyArrowDown:
+				case tb.KeyArrowDown:
 					key = 'j'
-				case termbox.KeyArrowUp:
+				case tb.KeyArrowUp:
 					key = 'k'
-				case termbox.KeyArrowLeft:
+				case tb.KeyArrowLeft:
 					key = 'h'
-				case termbox.KeyArrowRight:
+				case tb.KeyArrowRight:
 					key = 'l'
 				}
 				editorMoveCursor(key)
-			case termbox.KeyPgdn, termbox.KeyPgup:
+			case tb.KeyPgdn, tb.KeyPgup:
 				// To scroll up or down a page, we position
 				// the cursor either at the top or bottom of
 				// the screen, and then simulate an entire
 				// screen’s worth of ↑ or ↓ keypresses.
 				var key rune
-				if ev.Key == termbox.KeyPgdn {
+				if ev.Key == tb.KeyPgdn {
 					key = 'j'
 					E.cursorY = E.rowOffset + E.screenRows - 1
 					if E.cursorY > E.numRows {
@@ -161,9 +194,9 @@ loop:
 				}
 			default:
 				// logger.Printf("ev: %+v\n", ev)
-				if ev.Key == termbox.KeySpace || ev.Ch != 0 {
+				if ev.Key == tb.KeySpace || ev.Ch != 0 {
 					keyPressed := ev.Ch
-					if ev.Key == termbox.KeySpace {
+					if ev.Key == tb.KeySpace {
 						keyPressed = ' '
 					}
 					editorInsertChar(keyPressed)
@@ -171,7 +204,7 @@ loop:
 				// when pressing other keys, reset the quit time
 				kiloQuitTimes = KILO_QUIT_TIMES
 			}
-		case termbox.EventError:
+		case tb.EventError:
 			panic(ev.Err)
 		}
 
@@ -219,7 +252,7 @@ func editorMoveCursor(ch rune) {
 }
 
 func editorRefreshScreenSize() {
-	w, h := termbox.Size()
+	w, h := tb.Size()
 	E.screenCols = w
 	// save last two lines for status bar and status msg
 	E.screenRows = h - 2
@@ -234,17 +267,17 @@ func initEditor() {
 
 func editorRefreshScreen() {
 	editorScroll()
-	termbox.SetCursor(E.renderCursorX-E.colOffset, E.cursorY-E.rowOffset)
+	tb.SetCursor(E.renderCursorX-E.colOffset, E.cursorY-E.rowOffset)
 	// get size again before redrawAll, because the
 	// ui may be resized
-	termbox.Clear(ColDef, ColDef)
+	tb.Clear(ColDef, ColDef)
 	editorRefreshScreenSize()
 
 	editorDrawRows()
 	editorDrawStatusBar()
 	editorDrawMsgbar()
 
-	termbox.Flush()
+	tb.Flush()
 }
 
 func editorOpen(fileName string) {
@@ -270,6 +303,7 @@ func editorOpen(fileName string) {
 	}
 	E.filename = fileName
 	E.modified = false
+	editorSelectSyntaxHighlight()
 }
 
 func editorSave() {
@@ -279,6 +313,7 @@ func editorSave() {
 			editorSetStatusMsg("Save aborted")
 			return
 		}
+		editorSelectSyntaxHighlight()
 	}
 	var buffer bytes.Buffer
 	for _, erow := range E.rows {
@@ -326,6 +361,7 @@ func genRenderChars(rawChars []rune) []rune {
 func editorUpdateRow(erow *editorRow) {
 	erow.renderChars = genRenderChars(erow.rawChars)
 	erow.rsize = len(erow.renderChars)
+	editorUpdateSyntax(erow)
 }
 
 // editorRowCxToRx CursorX --> renderCursorX
@@ -391,12 +427,12 @@ func editorDrawRows() {
 				welcomeMsg := fmt.Sprintf("Kilo editor -- version %s", GKILO_VERSION)
 				padding := (E.screenCols - len(welcomeMsg)) / 2
 
-				termbox.SetCell(0, row, '~', ColWhi, ColDef)
+				tb.SetCell(0, row, '~', ColWhi, ColDef)
 				tbprint(padding, row, ColWhi,
 					ColDef,
 					welcomeMsg)
 			}
-			termbox.SetCell(0, row, '~', ColWhi, ColDef)
+			tb.SetCell(0, row, '~', ColWhi, ColDef)
 		} else {
 			// TODO: 没搞懂
 			// https://viewsourcecode.org/snaptoken/kilo/04.aTextViewer.html#horizontal-scrolling
@@ -407,7 +443,14 @@ func editorDrawRows() {
 			}
 			// logger.Printf("lineLen: %v, idx: %v\n", lineLen, idx)
 			if idx > 0 {
-				tbprint(0, row, ColWhi, ColDef, string(E.rows[fileRow].renderChars[E.colOffset:]))
+				erow := E.rows[fileRow]
+				chars := erow.renderChars[E.colOffset:]
+				colIdx := 0
+				for i := 0; i < len(chars); i++ {
+					textColor := editorSyntaxToColor(erow.hl[i])
+					tb.SetCell(colIdx, row, chars[i], textColor, ColDef)
+					colIdx += runewidth.RuneWidth(erow.renderChars[i])
+				}
 			}
 		}
 	}
@@ -563,8 +606,8 @@ func editorInsertChar(c rune) {
 }
 
 func editorDrawStatusBar() {
-	fgColor := termbox.ColorBlack
-	bgColor := termbox.ColorWhite
+	fgColor := tb.ColorBlack
+	bgColor := tb.ColorWhite
 	filename := "[No Name]"
 	if E.filename != "" {
 		filename = E.filename
@@ -573,10 +616,27 @@ func editorDrawStatusBar() {
 	if E.modified {
 		dirtyMsg = "(modified)"
 	}
-	msg := fmt.Sprintf("%.*s - %d lines %s", FILENAME_MAX_PRINT, filename, E.numRows, dirtyMsg)
-	tbprint(0, E.statusBarRowIdx, fgColor, bgColor, msg)
-	for i := 0; i < E.screenCols-len(msg); i++ {
-		termbox.SetCell(len(msg)+i, E.statusBarRowIdx, rune(' '), fgColor, bgColor)
+	// msg at the left end of the status bar
+	lMsg := fmt.Sprintf("%.*s - %d lines %s", FILENAME_MAX_PRINT, filename, E.numRows, dirtyMsg)
+	// msg at the right end of the status bar
+	fileTypeDisp := "no ft"
+	if E.syntax != nil {
+		fileTypeDisp = E.syntax.fileType
+	}
+	rMsg := fmt.Sprintf("%s | %d/%d", fileTypeDisp, E.cursorY+1, E.numRows)
+	printLen := len(lMsg)
+	// print at most `E.screenCols` chars
+	if printLen > E.screenCols {
+		printLen = E.screenCols
+	}
+	tbprint(0, E.statusBarRowIdx, fgColor, bgColor, lMsg[:printLen])
+	for printLen < E.screenCols {
+		if E.screenCols-printLen == len(rMsg) {
+			tbprint(printLen, E.statusBarRowIdx, fgColor, bgColor, rMsg)
+			break
+		}
+		tb.SetCell(printLen, E.statusBarRowIdx, ' ', fgColor, bgColor)
+		printLen++
 	}
 }
 
@@ -603,24 +663,29 @@ func editorSetStatusMsg(strFmt string, args ...any) {
 }
 
 func editorPrompt(prompt string,
-	cb func(query string, lastKey termbox.Key)) string {
+	cb func(query string, lastKey tb.Key)) string {
 	var buffer bytes.Buffer
 
 	for {
 		editorSetStatusMsg(prompt, buffer.String())
 		editorRefreshScreen()
 
-		switch ev := termbox.PollEvent(); ev.Type {
-		case termbox.EventKey:
+		switch ev := tb.PollEvent(); ev.Type {
+		case tb.EventKey:
 			if ev.Ch != 0 {
 				buffer.WriteRune(ev.Ch)
-			} else if ev.Key == termbox.KeyEnter {
+			} else if ev.Key == tb.KeyEnter {
 				editorSetStatusMsg("")
+				// cb need to be called here to let
+				// `editorFindCallback` get a chance to know about the
+				// event
+				cb(buffer.String(), ev.Key)
 				return buffer.String()
-			} else if ev.Key == termbox.KeyEsc {
+			} else if ev.Key == tb.KeyEsc {
 				editorSetStatusMsg("")
+				cb(buffer.String(), ev.Key)
 				return ""
-			} else if ev.Key == termbox.KeyBackspace2 || ev.Key == termbox.KeyDelete {
+			} else if ev.Key == tb.KeyBackspace2 || ev.Key == tb.KeyDelete {
 				if buffer.Len() > 0 {
 					buffer.Truncate(buffer.Len() - 1)
 				}
@@ -648,20 +713,29 @@ func editorFind() {
 }
 
 var (
-	lastMatch int = -1
-	direction int = 1
+	lastMatch   int = -1
+	direction   int = 1
+	savedHL     []editorHighlight
+	savedHLline int
 )
 
-func editorFindCallback(query string, lastKey termbox.Key) {
+func editorFindCallback(query string, lastKey tb.Key) {
+	if savedHL != nil {
+		copy(E.rows[savedHLline].hl, savedHL)
+		savedHL = nil
+	}
 	// when in `incremental search`, press Enter or Esc means the search is done
-	if lastKey == termbox.KeyEnter || lastKey == termbox.KeyEsc {
+	if lastKey == tb.KeyEnter || lastKey == tb.KeyEsc {
 		lastMatch = -1
 		direction = 1
 		return
-	} else if lastKey == termbox.KeyArrowDown {
+	} else if lastKey == tb.KeyArrowDown {
 		direction = 1
-	} else if lastKey == termbox.KeyArrowUp {
+	} else if lastKey == tb.KeyArrowUp {
 		direction = -1
+	} else { // 当不是方向键时，还是从头开始搜索
+		lastMatch = -1
+		direction = 1
 	}
 	if lastMatch == -1 { // if there is no lastMatch, search in the
 		// forward direction
@@ -679,6 +753,7 @@ func editorFindCallback(query string, lastKey termbox.Key) {
 		} // allow search to wrap around
 		erow := E.rows[curr]
 		rx := strings.Index(string(erow.renderChars), query)
+		logger.Printf("query: %v, rx: %v\n", query, rx)
 		if rx > 0 {
 			E.cursorY = curr
 			lastMatch = curr
@@ -692,15 +767,137 @@ func editorFindCallback(query string, lastKey termbox.Key) {
 			// over their screen to find where their cursor jumped to,
 			// and where the matching line is.
 			E.rowOffset = E.numRows
+			// save original hl for restore first
+			savedHLline = curr
+			savedHL = make([]editorHighlight, erow.rsize)
+			copy(savedHL, erow.hl)
+			// highlight the query
+			for i := rx; i < rx+len(query); i++ {
+				erow.hl[i] = HL_MATCH
+			}
 			break
 		}
 	}
 }
 
 // This function is often use
-func tbprint(x, y int, fg, bg termbox.Attribute, msg string) {
+func tbprint(x, y int, fg, bg tb.Attribute, msg string) {
 	for _, c := range msg {
-		termbox.SetCell(x, y, c, fg, bg)
+		tb.SetCell(x, y, c, fg, bg)
 		x += runewidth.RuneWidth(c)
+	}
+}
+
+const (
+	SEPS = ",.()+-/*=~%<>[];，；。：（）"
+)
+
+/***** syntax highlighting *****/
+func isSeparator(c rune) bool {
+	return unicode.IsSpace(c) || strings.ContainsRune(SEPS, c)
+}
+
+func editorUpdateSyntax(erow *editorRow) {
+	if erow.hl == nil {
+		erow.hl = make([]editorHighlight, erow.rsize)
+	}
+	// make erow.hl as big as rsize
+	if erow.rsize < len(erow.hl) {
+		erow.hl = erow.hl[:erow.rsize]
+	} else if erow.rsize > len(erow.hl) {
+		erow.hl = append(erow.hl, make([]editorHighlight, erow.rsize-len(erow.hl))...)
+	}
+	// memset to default color first
+	for i := 0; i < len(erow.hl); i++ {
+		erow.hl[i] = HL_NORMAl
+	}
+	if E.syntax == nil {
+		return
+	}
+
+	var i int
+	preSep := true
+	// used to indicate whether in a string currently, also used to
+	// store the quotes (" / ')
+	inStr := rune(0)
+	for i = 0; i < erow.rsize; {
+		var prevHL editorHighlight
+		if i > 0 {
+			prevHL = erow.hl[i-1]
+		} else {
+			prevHL = HL_NORMAl
+		}
+		char := erow.renderChars[i]
+		// string
+		if E.syntax.flags&HL_HIGHLIGHT_STRINGS != 0 {
+			if inStr != rune(0) { // in a string
+				erow.hl[i] = HL_STRING
+				// take care of escaped quotes
+				if char == '\\' && i+1 < erow.rsize { // it's a `\`
+					erow.hl[i+1] = HL_STRING
+					i += 2
+					continue
+				}
+				if char == inStr {
+					inStr = rune(0) // met the ending of string, reset `inStr`
+				}
+				i++
+				preSep = true
+				continue
+			} else { // not in a string
+				if char == '"' || char == '\'' {
+					erow.hl[i] = HL_STRING
+					inStr = char
+					i++
+					continue
+				}
+			}
+		}
+		// number
+		if E.syntax.flags&HL_HIGHLIGHT_NUMBERS != 0 {
+			if (unicode.IsDigit(char) && (preSep || prevHL == HL_NUMBER)) || (char == '.' && prevHL == HL_NUMBER) {
+				erow.hl[i] = HL_NUMBER
+				i++
+				preSep = false
+				continue
+			}
+			preSep = isSeparator(char)
+			i++
+		}
+	}
+}
+
+func editorSyntaxToColor(hl editorHighlight) tb.Attribute {
+	switch hl {
+	case HL_NUMBER:
+		return tb.ColorRed
+	case HL_MATCH:
+		return tb.ColorLightBlue
+	case HL_STRING:
+		return tb.ColorMagenta
+	default:
+		return tb.ColorDefault
+	}
+}
+
+func editorSelectSyntaxHighlight() {
+	E.syntax = nil
+	if E.filename == "" {
+		return
+	}
+	parts := strings.Split(E.filename, ".")
+	fileExt := parts[1]
+	for _, hl := range HLDB {
+		for _, m := range hl.fileMatch {
+			isExt := strings.HasPrefix(m, ".")
+			if (isExt && fileExt == m[1:]) || (!isExt && strings.Contains(E.filename, m)) {
+				E.syntax = &hl
+				// update the syntax of every row
+				for i := 0; i < E.numRows; i++ {
+					editorUpdateSyntax(E.rows[i])
+				}
+				return
+			}
+		}
 	}
 }

@@ -91,3 +91,8 @@ func TestCxToRx(t *testing.T) {
 	cx := 2
 	fmt.Printf("cx: %v, rx: %v\n", cx, CxToRx(s, cx))
 }
+
+func TestPunct(t *testing.T) {
+	c := '。'
+	fmt.Printf("%c: %v\n", c, isSeparator(c))
+}
