@@ -459,19 +459,21 @@ func editorDrawRows() {
 			}
 			tb.SetCell(0, row, '~', ColWhi, ColDef)
 		} else {
-			// TODO: 没搞懂
 			// https://viewsourcecode.org/snaptoken/kilo/04.aTextViewer.html#horizontal-scrolling
 			lineLen := E.rows[fileRow].size
-			idx := lineLen - E.colOffset
-			if idx < 0 {
-				idx = 0
+			displayLen := lineLen - E.colOffset
+			if displayLen < 0 {
+				displayLen = 0
 			}
 			// logger.Printf("lineLen: %v, idx: %v\n", lineLen, idx)
-			if idx > 0 {
+			if displayLen > 0 {
 				erow := E.rows[fileRow]
-				chars := erow.renderChars[E.colOffset:]
+				chars := erow.renderChars[E.colOffset:] // display from offset
 				colIdx := 0
-				for i := 0; i < len(chars); i++ {
+				if displayLen > E.screenCols {
+					displayLen = E.screenCols // there are at most E.screenCols space to display
+				}
+				for i := 0; colIdx < displayLen; i++ {
 					if unicode.IsControl(chars[i]) {
 						var sym rune
 						if chars[i] <= 26 {
