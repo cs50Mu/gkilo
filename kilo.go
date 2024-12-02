@@ -31,15 +31,21 @@ const (
 	HL_NORMAl editorHighlight = iota
 	HL_NUMBER
 	HL_STRING
+	HL_COMMENT
+	HL_MLCOMMENT
+	HL_KEYWORD1
+	HL_KEYWORD2
 	HL_MATCH
 )
 
 type editorRow struct {
-	size        int
-	rawChars    []rune // 原始的字符集合
-	rsize       int
-	renderChars []rune            // 需要渲染的字符集合
-	hl          []editorHighlight // for highlighting
+	idx           int
+	size          int
+	rawChars      []rune // 原始的字符集合
+	rsize         int
+	renderChars   []rune            // 需要渲染的字符集合
+	hl            []editorHighlight // for highlighting
+	hlOpenComment bool
 }
 
 type editorConf struct {
@@ -65,7 +71,12 @@ type editorSyntax struct {
 	fileType  string
 	fileMatch []string // an array of strings, where each string
 	// contains a pattern to match a filename against
-	flags int
+	singlelineCommentStart string // start of single line comment, eg,
+	// `//` in golang or c
+	multilineCommentStart string
+	multilineCommentEnd   string
+	keywords              []string
+	flags                 int
 }
 
 const (
@@ -74,13 +85,27 @@ const (
 )
 
 /***** filetypes *****/
-var HLDB = []editorSyntax{
-	{
-		fileType:  "c",
-		fileMatch: []string{".c", ".h", ".cpp"},
-		flags:     HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
-	},
-}
+var (
+	C_HL_EXTENSIONS = []string{".c", ".h", ".cpp"}
+	C_HL_KEYWORDS   = []string{
+		"switch", "if", "while", "for", "break", "continue", "return", "else",
+		"struct", "union", "typedef", "static", "enum", "class", "case",
+		"int|", "long|", "double|", "float|", "char|", "unsigned|", "signed|",
+		"void|",
+	}
+
+	HLDB = []editorSyntax{
+		{
+			fileType:               "c",
+			fileMatch:              C_HL_EXTENSIONS,
+			singlelineCommentStart: "//",
+			multilineCommentStart:  "/*",
+			multilineCommentEnd:    "*/",
+			keywords:               C_HL_KEYWORDS,
+			flags:                  HL_HIGHLIGHT_NUMBERS | HL_HIGHLIGHT_STRINGS,
+		},
+	}
+)
 
 var E *editorConf
 var logger *log.Logger
@@ -447,8 +472,19 @@ func editorDrawRows() {
 				chars := erow.renderChars[E.colOffset:]
 				colIdx := 0
 				for i := 0; i < len(chars); i++ {
-					textColor := editorSyntaxToColor(erow.hl[i])
-					tb.SetCell(colIdx, row, chars[i], textColor, ColDef)
+					if unicode.IsControl(chars[i]) {
+						var sym rune
+						if chars[i] <= 26 {
+							sym = '@' + chars[i]
+						} else {
+							sym = '?'
+						}
+						// use inverted color
+						tb.SetCell(colIdx, row, sym, ColDef, ColWhi)
+					} else {
+						textColor := editorSyntaxToColor(erow.hl[i])
+						tb.SetCell(colIdx, row, chars[i], textColor, ColDef)
+					}
 					colIdx += runewidth.RuneWidth(erow.renderChars[i])
 				}
 			}
@@ -462,12 +498,10 @@ func editorInsertRow(rowIdx int, chars []rune) {
 		return
 	}
 	erow := editorRow{
-		size: len(chars),
-		// rawChars: []rune(chars),
-		rawChars: make([]rune, 0, 512), // prealloc space to avoid resize frequently
+		idx:      rowIdx,
+		size:     len(chars),
+		rawChars: chars,
 	}
-	erow.rawChars = erow.rawChars[:len(chars)] // make room for copy
-	copy(erow.rawChars, chars)                 // dst cannot be empty when copying
 	editorUpdateRow(&erow)
 
 	// insert after the last row
@@ -479,6 +513,10 @@ func editorInsertRow(rowIdx int, chars []rune) {
 		E.rows = append(E.rows, nil)
 		copy(E.rows[rowIdx+1:], E.rows[rowIdx:])
 		E.rows[rowIdx] = &erow
+		// update rowIdx
+		for i := rowIdx + 1; i <= E.numRows; i++ {
+			E.rows[i].idx += 1
+		}
 	}
 
 	E.numRows++
@@ -536,6 +574,9 @@ func editorDelRow(rowIdx int) {
 	copy(E.rows[rowIdx:], E.rows[rowIdx+1:])
 	E.numRows--
 	E.rows = E.rows[:E.numRows]
+	for i := rowIdx; i < E.numRows; i++ {
+		E.rows[i].idx -= 1
+	}
 	E.modified = true
 }
 
@@ -589,7 +630,7 @@ func editorRowInsertChar(erow *editorRow, at int, c rune) {
 
 	erow.size++
 	editorUpdateRow(erow)
-	logger.Printf("erow.size: %+v\n", erow.size)
+	// logger.Printf("erow.size: %+v\n", erow.size)
 	E.modified = true
 }
 
@@ -600,7 +641,7 @@ func editorInsertChar(c rune) {
 	}
 	erow := E.rows[E.cursorY]
 	editorRowInsertChar(erow, E.cursorX, c)
-	logger.Printf("rawChars: %c\n", erow.rawChars)
+	// logger.Printf("rawChars: %c\n", erow.rawChars)
 	// logger.Printf("renderChars: %c\n", erow.renderChars)
 	E.cursorX++
 }
@@ -815,17 +856,58 @@ func editorUpdateSyntax(erow *editorRow) {
 		return
 	}
 
+	keywords := E.syntax.keywords
+	scs := E.syntax.singlelineCommentStart
+	mcs := E.syntax.multilineCommentStart
+	mce := E.syntax.multilineCommentEnd
 	var i int
 	preSep := true
 	// used to indicate whether in a string currently, also used to
-	// store the quotes (" / ')
+	// store the quotes (" or ')
 	inStr := rune(0)
+	inComment := erow.idx > 0 && E.rows[erow.idx-1].hlOpenComment
 	for i = 0; i < erow.rsize; {
 		var prevHL editorHighlight
 		if i > 0 {
 			prevHL = erow.hl[i-1]
 		} else {
 			prevHL = HL_NORMAl
+		}
+
+		// inStr == rune(0) means not in a string
+		// comment
+		if scs != "" && inStr == rune(0) && !inComment {
+			if strings.HasPrefix(string(erow.renderChars[i:]), scs) {
+				for j := i; j < erow.rsize; j++ { // make hl[i..] HL_COMMENT
+					erow.hl[j] = HL_COMMENT
+				}
+				break
+			}
+		}
+		if mcs != "" && mce != "" && inStr == rune(0) { // not in str
+			if inComment {
+				erow.hl[i] = HL_MLCOMMENT
+				if strings.HasPrefix(string(erow.renderChars[i:]), mce) { // we met the end of ml_comment
+					for j := i; j < i+len(mce); j++ {
+						erow.hl[j] = HL_MLCOMMENT
+					}
+					i += len(mce)
+					preSep = true
+					inComment = false
+					continue
+				} else {
+					i++
+					continue
+				}
+			} else if strings.HasPrefix(string(erow.renderChars[i:]), mcs) { // we met the opening of ml_comment
+				// logger.Printf("renderChars: %+v\n", string(erow.renderChars[i:]))
+				for j := i; j < i+len(mcs); j++ {
+					erow.hl[j] = HL_MLCOMMENT
+				}
+				i += len(mcs)
+				inComment = true
+				continue
+			}
 		}
 		char := erow.renderChars[i]
 		// string
@@ -861,9 +943,44 @@ func editorUpdateSyntax(erow *editorRow) {
 				preSep = false
 				continue
 			}
-			preSep = isSeparator(char)
-			i++
 		}
+		// keywords
+		if preSep {
+			var foundKeyword bool
+			for _, keyword := range keywords {
+				var isKw2 bool
+				if strings.HasSuffix(keyword, "|") {
+					keyword = keyword[:len(keyword)-1] // remove trailing pipe `|`
+					isKw2 = true
+				}
+				// pre is sep && keyword match && (we met lineEnd || next char is sep also)
+				if strings.HasPrefix(string(erow.renderChars[i:]), keyword) &&
+					(i+len(keyword) >= erow.rsize ||
+						isSeparator(erow.renderChars[i+len(keyword)])) {
+					for j := i; j < i+len(keyword); j++ {
+						if isKw2 {
+							erow.hl[j] = HL_KEYWORD2
+						} else {
+							erow.hl[j] = HL_KEYWORD1
+						}
+					}
+					i += len(keyword)
+					foundKeyword = true
+					break
+				}
+			}
+			if foundKeyword {
+				preSep = false
+				continue
+			}
+		}
+		preSep = isSeparator(char)
+		i++
+	}
+	changed := erow.hlOpenComment != inComment
+	erow.hlOpenComment = inComment
+	if changed && erow.idx+1 < E.numRows {
+		editorUpdateSyntax(E.rows[erow.idx+1])
 	}
 }
 
@@ -875,6 +992,12 @@ func editorSyntaxToColor(hl editorHighlight) tb.Attribute {
 		return tb.ColorLightBlue
 	case HL_STRING:
 		return tb.ColorMagenta
+	case HL_COMMENT, HL_MLCOMMENT:
+		return tb.ColorCyan
+	case HL_KEYWORD1:
+		return tb.ColorYellow
+	case HL_KEYWORD2:
+		return tb.ColorGreen
 	default:
 		return tb.ColorDefault
 	}
@@ -886,6 +1009,10 @@ func editorSelectSyntaxHighlight() {
 		return
 	}
 	parts := strings.Split(E.filename, ".")
+	if len(parts) != 2 {
+		logger.Printf("[WARN] not a proper filename: %v, disable syntax highlighting", E.filename)
+		return
+	}
 	fileExt := parts[1]
 	for _, hl := range HLDB {
 		for _, m := range hl.fileMatch {
