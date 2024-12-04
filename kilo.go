@@ -136,7 +136,7 @@ func main() {
 		editorOpen(*fileNamePtr)
 	}
 
-	editorSetStatusMsg("HELP: C-S = save | C-Q = quit | C-F = find")
+	editorSetStatusMsg("HELP: C-X C-S = save | C-X C-C = quit | C-S = find")
 	editorRefreshScreen()
 	editorProcessKeypress()
 }
@@ -144,38 +144,43 @@ func main() {
 // editorProcessKeypress ...
 func editorProcessKeypress() {
 	kiloQuitTimes := KILO_QUIT_TIMES
+	var prevKey tb.Key
 loop:
 	for {
 		switch ev := tb.PollEvent(); ev.Type {
 		case tb.EventKey:
 			switch ev.Key {
-			case tb.KeyCtrlD:
-				kiloQuitTimes--
-				if E.modified && kiloQuitTimes > 0 {
-					editorSetStatusMsg(fmt.Sprintf("WARNING!!! File has unsaved changes. Press Ctrl-D %d more times to quit.", kiloQuitTimes))
-				} else {
-					break loop
+			case tb.KeyCtrlC:
+				if prevKey == tb.KeyCtrlX {
+					kiloQuitTimes--
+					if E.modified && kiloQuitTimes > 0 {
+						editorSetStatusMsg(fmt.Sprintf("WARNING!!! File has unsaved changes. Press C-X C-C %d more times to quit.", kiloQuitTimes))
+					} else {
+						break loop
+					}
 				}
 			case tb.KeyEsc:
 				break loop
 			case tb.KeyEnter:
 				editorInsertNewline()
-			// case tb.KeyCtrlL:
-
 			// Backspace delete the character to the left of the cursor
 			// Del delete the character under the cursor
 			case tb.KeyBackspace2, tb.KeyDelete:
 				if ev.Key == tb.KeyDelete {
-					editorMoveCursor('l')
+					editorMoveCursor(tb.KeyArrowRight)
 				}
 				editorDelChar()
 			// case tb.KeyDelete:
 			case tb.KeyCtrlL:
 				editorDelRow(E.cursorY)
 			case tb.KeyCtrlS:
-				editorSave()
-			case tb.KeyCtrlF:
-				editorFind()
+				if prevKey == tb.KeyCtrlX {
+					editorSave()
+				} else {
+					editorFind()
+				}
+			case tb.KeyCtrlX:
+				prevKey = ev.Key
 			case tb.KeyHome, tb.KeyCtrlA:
 				E.cursorX = 0
 			case tb.KeyEnd, tb.KeyCtrlE:
@@ -183,33 +188,23 @@ loop:
 					E.cursorX = E.rows[E.cursorY].size
 				}
 			case tb.KeyArrowDown, tb.KeyArrowUp,
-				tb.KeyArrowLeft, tb.KeyArrowRight:
-				var key rune
-				switch ev.Key {
-				case tb.KeyArrowDown:
-					key = 'j'
-				case tb.KeyArrowUp:
-					key = 'k'
-				case tb.KeyArrowLeft:
-					key = 'h'
-				case tb.KeyArrowRight:
-					key = 'l'
-				}
-				editorMoveCursor(key)
+				tb.KeyArrowLeft, tb.KeyArrowRight,
+				tb.KeyCtrlN, tb.KeyCtrlP, tb.KeyCtrlB, tb.KeyCtrlF:
+				editorMoveCursor(ev.Key)
 			case tb.KeyPgdn, tb.KeyPgup:
 				// To scroll up or down a page, we position
 				// the cursor either at the top or bottom of
 				// the screen, and then simulate an entire
 				// screen’s worth of ↑ or ↓ keypresses.
-				var key rune
+				var key tb.Key
 				if ev.Key == tb.KeyPgdn {
-					key = 'j'
+					key = tb.KeyArrowDown
 					E.cursorY = E.rowOffset + E.screenRows - 1
 					if E.cursorY > E.numRows {
 						E.cursorY = E.numRows
 					}
 				} else {
-					key = 'k'
+					key = tb.KeyArrowUp
 					E.cursorY = E.rowOffset
 				}
 
@@ -237,26 +232,26 @@ loop:
 	}
 }
 
-func editorMoveCursor(ch rune) {
-	switch ch {
-	case 'h':
+func editorMoveCursor(key tb.Key) {
+	switch key {
+	case tb.KeyArrowDown, tb.KeyCtrlN:
+		if E.cursorY < E.numRows {
+			E.cursorY++
+		}
+	case tb.KeyArrowUp, tb.KeyCtrlP:
+		if E.cursorY > 0 {
+			E.cursorY--
+		}
+	case tb.KeyArrowLeft, tb.KeyCtrlB:
 		if E.cursorX > 0 {
 			E.cursorX--
 		}
-	case 'l':
+	case tb.KeyArrowRight, tb.KeyCtrlF:
 		if E.cursorY < E.numRows {
 			row := E.rows[E.cursorY]
 			if E.cursorX < row.size {
 				E.cursorX++
 			}
-		}
-	case 'j':
-		if E.cursorY < E.numRows {
-			E.cursorY++
-		}
-	case 'k':
-		if E.cursorY > 0 {
-			E.cursorY--
 		}
 	}
 
@@ -796,8 +791,8 @@ func editorFindCallback(query string, lastKey tb.Key) {
 		} // allow search to wrap around
 		erow := E.rows[curr]
 		rx := strings.Index(string(erow.renderChars), query)
-		logger.Printf("query: %v, rx: %v\n", query, rx)
-		if rx > 0 {
+		// logger.Printf("query: %v, rx: %v\n", query, rx)
+		if rx >= 0 {
 			E.cursorY = curr
 			lastMatch = curr
 			// cursorX need a cx
